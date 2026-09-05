@@ -2,9 +2,11 @@
 
 #include <cmath>
 #include <array>
+#include <vector>
 #include <concepts>
 #include <algorithm>
 #include <numbers>
+#include <utility>
 
 namespace openx::dsp {
 

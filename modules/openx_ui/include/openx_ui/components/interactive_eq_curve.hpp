@@ -5,6 +5,8 @@
 #include "../dsp/spectrum_analyzer.hpp"
 #include <functional>
 #include <cmath>
+#include <array>
+#include <algorithm>
 
 namespace openx::ui {
 

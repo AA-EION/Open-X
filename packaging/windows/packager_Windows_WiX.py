@@ -89,10 +89,13 @@ def main():
     ]
 
     # Staging universal VST3 bundles
+    plugins_staging = os.path.join(staging_dir, "plugins")
+    os.makedirs(plugins_staging, exist_ok=True)
+
     plugin_paths = {}
     for name in PLUGIN_NAMES:
         bundle_name = f"{name}.vst3"
-        staged_bundle = os.path.join(staging_dir, bundle_name)
+        staged_bundle = os.path.join(plugins_staging, bundle_name)
         os.makedirs(staged_bundle, exist_ok=True)
 
         found_any = False
@@ -246,22 +249,36 @@ def main():
     print(f"[WIX] Generated WiX manifest at {wxs_output}")
 
     # Build MSI if wix CLI is present
-    if shutil.which("wix"):
-        print(f"[BUILD] Running wix build...")
+    wix_cmd = shutil.which("wix")
+    if not wix_cmd:
+        dotnet_wix = os.path.expanduser("~/.dotnet/tools/wix.exe")
+        if os.path.exists(dotnet_wix):
+            wix_cmd = dotnet_wix
+
+    if wix_cmd:
+        print(f"[BUILD] Running wix build using {wix_cmd}...")
         cmd = [
-            "wix", "build", wxs_output,
+            wix_cmd, "build", wxs_output,
             "-ext", "WixToolset.UI.wixext",
             "-arch", "x64",
-            "-loc", "packaging/windows/overrides.wxl",
             "-o", output_msi
         ]
+        if os.path.exists("packaging/windows/overrides.wxl"):
+            cmd.extend(["-loc", "packaging/windows/overrides.wxl"])
+
         res = subprocess.run(cmd)
+        if res.returncode != 0 and "-loc" in cmd:
+            print("[WARN] wix build failed with localization file, retrying without -loc...")
+            fallback_cmd = [c for i, c in enumerate(cmd) if c != "-loc" and (i == 0 or cmd[i-1] != "-loc")]
+            res = subprocess.run(fallback_cmd)
+
         if res.returncode == 0:
             print(f"[SUCCESS] Built MSI installer: {output_msi}")
         else:
-            print(f"[WARN] wix build returned {res.returncode}")
+            print(f"[ERROR] wix build returned {res.returncode}")
+            sys.exit(res.returncode)
     else:
-        print("[INFO] 'wix' command not found in PATH. Skipping immediate build (will run on CI runner).")
+        print("[INFO] 'wix' command not found in PATH or ~/.dotnet/tools. Skipping immediate build (will run on CI runner).")
 
 if __name__ == "__main__":
     main()

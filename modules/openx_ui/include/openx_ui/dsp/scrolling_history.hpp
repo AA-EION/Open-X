@@ -4,6 +4,7 @@
 #include <atomic>
 #include <concepts>
 #include <span>
+#include <cstdint>
 
 namespace openx::ui {
 

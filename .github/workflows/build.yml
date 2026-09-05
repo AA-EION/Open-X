@@ -161,8 +161,13 @@ jobs:
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
-          dotnet tool install --global wix --version 5.0.2
-          wix extension add WixToolset.UI.wixext/5.0.2
+          dotnet tool install --global wix --version 5.0.2 || true
+          $dotnetTools = "$HOME\.dotnet\tools"
+          if (Test-Path $dotnetTools) {
+              $env:PATH = "$dotnetTools;$env:PATH"
+              "$dotnetTools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          }
+          wix extension add --global WixToolset.UI.wixext/5.0.2 || wix extension add WixToolset.UI.wixext/5.0.2
 
       - name: Build Windows Universal MSI Installer Bundle
         if: matrix.platform == 'windows'
@@ -182,5 +187,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Open-X-Suite-Windows-Universal-VST3
-          path: staging/*.vst3
+          path: staging/plugins/
           retention-days: 14
