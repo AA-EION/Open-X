@@ -52,10 +52,8 @@ jobs:
           fetch-depth: 1
 
       - name: Setup Ninja (macOS)
-        if: matrix.generator == 'Ninja'
-        uses: spenthor/setup-ninja@v1
-        with:
-          version: 1.11.1
+        if: matrix.platform == 'macos'
+        run: brew install ninja
 
       - name: Run sccache-cache
         uses: mozilla-actions/sccache-action@v0.0.5
