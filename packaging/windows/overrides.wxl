@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<WixLocalization Culture="en-us" xmlns="http://wixtoolset.org/schemas/v4/wxl">
+    <String Id="WelcomeDlgTitle" Value="{\WixUI_Font_Title}Welcome to the Open-X DSP Suite Setup" />
+    <String Id="WelcomeDlgDescription" Value="This will install the complete Open-X DSP Suite (7 professional audio plugins: EQ-X, Comp-X, Limit-X, Verb-X, MB-X, DS-X, Gate-X) on your computer." />
+</WixLocalization>

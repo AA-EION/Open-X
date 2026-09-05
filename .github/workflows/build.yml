@@ -1,0 +1,198 @@
+name: Open-X Monorepo CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUILD_TYPE: Release
+  CMAKE_BUILD_PARALLEL_LEVEL: 4
+  SCCACHE_GHA_ENABLED: "true"
+
+jobs:
+  build-suite:
+    name: ${{ matrix.name }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS-Universal
+            os: macos-14
+            platform: macos
+            arch: universal
+            generator: Ninja
+            cmake_args: >-
+              -DCMAKE_BUILD_TYPE=Release
+              -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+              -DOPENX_BUILD_VST3=ON
+              -DOPENX_BUILD_AU=ON
+              -DOPENX_BUILD_AAX=OFF
+              -DOPENX_BUILD_UNINSTALLER=ON
+              -DCMAKE_C_COMPILER_LAUNCHER=sccache
+              -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          - name: Windows-Universal
+            os: windows-2022
+            platform: windows
+            arch: universal
+            generator: "Visual Studio 17 2022"
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Setup Ninja (macOS)
+        if: matrix.generator == 'Ninja'
+        uses: spenthor/setup-ninja@v1
+        with:
+          version: 1.11.1
+
+      - name: Run sccache-cache
+        uses: mozilla-actions/sccache-action@v0.0.5
+
+      - name: Cache JUCE & FetchContent Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/build/_deps
+            ${{ github.workspace }}/build-x64/_deps
+            ${{ github.workspace }}/build-arm64/_deps
+            ~/.cmake/packages
+          key: ${{ runner.os }}-deps-${{ hashFiles('**/CMakeLists.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-deps-
+
+      # ----------------------------------------------------
+      # macOS Universal Build & Packaging
+      # ----------------------------------------------------
+      - name: Configure CMake (macOS Universal)
+        if: matrix.platform == 'macos'
+        run: >
+          cmake -B build
+          -G "${{ matrix.generator }}"
+          ${{ matrix.cmake_args }}
+
+      - name: Build Suite & Uninstaller (macOS Universal)
+        if: matrix.platform == 'macos'
+        run: cmake --build build --config Release --parallel
+
+      - name: Run DSP Unit Tests (macOS)
+        if: matrix.platform == 'macos'
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Ad-Hoc Sign Mach-O Binaries & Bundles (macOS)
+        if: matrix.platform == 'macos'
+        run: |
+          echo "Ad-hoc signing all plugins, components, and uninstaller application with hardened runtime..."
+          find build -name "*.vst3" -exec codesign --force --deep -s - --options=runtime {} \; || true
+          find build -name "*.component" -exec codesign --force --deep -s - --options=runtime {} \; || true
+          find build -name "*.app" -exec codesign --force --deep -s - --options=runtime {} \; || true
+
+      - name: Build macOS PKG Installer Bundle
+        if: matrix.platform == 'macos'
+        run: python3 packaging/macos/packager_macOS.py
+
+      - name: Stage Artifacts (macOS)
+        if: matrix.platform == 'macos'
+        run: |
+          mkdir -p staging/plugins
+          find build/plugins -name "*.vst3" -maxdepth 4 -exec cp -R {} staging/plugins/ \; || true
+          find build/plugins -name "*.component" -maxdepth 4 -exec cp -R {} staging/plugins/ \; || true
+          find build -name "Open-X Uninstaller.app" -exec cp -R {} staging/ \; || true
+
+      - name: Upload macOS Single Bundle Installer
+        if: matrix.platform == 'macos'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Open-X-Suite-macOS-Installer
+          path: staging/Open-X-Suite-macOS.pkg
+          retention-days: 14
+
+      - name: Upload macOS GUI Uninstaller App
+        if: matrix.platform == 'macos'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Open-X-Uninstaller-macOS
+          path: staging/Open-X Uninstaller.app
+          retention-days: 14
+
+      - name: Upload macOS Raw Plugins
+        if: matrix.platform == 'macos'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Open-X-Suite-macOS-Plugins
+          path: staging/plugins/
+          retention-days: 14
+
+      # ----------------------------------------------------
+      # Windows Universal Build & WiX MSI Packaging
+      # ----------------------------------------------------
+      - name: Configure & Build x64 Suite (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          cmake -B build-x64 -G "${{ matrix.generator }}" -A x64 `
+            -DOPENX_BUILD_VST3=ON `
+            -DOPENX_BUILD_AU=OFF `
+            -DOPENX_BUILD_AAX=OFF `
+            -DOPENX_BUILD_UNINSTALLER=OFF `
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache `
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          cmake --build build-x64 --config Release --parallel
+
+      - name: Run DSP Unit Tests (Windows x64)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: ctest --test-dir build-x64 -C Release --output-on-failure
+
+      - name: Configure & Build ARM64 Suite (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          cmake -B build-arm64 -G "${{ matrix.generator }}" -A ARM64 `
+            -DOPENX_BUILD_VST3=ON `
+            -DOPENX_BUILD_AU=OFF `
+            -DOPENX_BUILD_AAX=OFF `
+            -DOPENX_BUILD_UNINSTALLER=OFF `
+            -DOPENX_ENABLE_TESTS=OFF `
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache `
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          cmake --build build-arm64 --config Release --parallel
+
+      - name: Install WiX Toolset v5 (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          wix extension add WixToolset.UI.wixext/5.0.2
+
+      - name: Build Windows Universal MSI Installer Bundle
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: python packaging/windows/packager_Windows_WiX.py
+
+      - name: Upload Windows Single Bundle Installer
+        if: matrix.platform == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Open-X-Suite-Windows-Installer
+          path: staging/Open-X-Suite-Windows.msi
+          retention-days: 14
+
+      - name: Upload Windows Universal VST3 Plugins
+        if: matrix.platform == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Open-X-Suite-Windows-Universal-VST3
+          path: staging/*.vst3
+          retention-days: 14
