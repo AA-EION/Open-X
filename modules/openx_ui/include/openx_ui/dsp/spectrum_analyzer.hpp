@@ -59,7 +59,7 @@ public:
     SpectrumAnalyzer()
         : juce::Thread("OpenX_SpectrumAnalyzerWorker"),
           forwardFft(FftOrder),
-          window(FftSize, juce::dsp::WindowingMethod::hann)
+          window(FftSize, juce::dsp::WindowingFunction<float>::hann)
     {
         ringBuffer.fill(0.0f);
         fftData.fill(0.0f);
@@ -67,7 +67,7 @@ public:
         for (auto& b : triBuffer.getBuffers()) {
             b.fill(-100.0f);
         }
-        startThread(juce::Thread::Priority::belowNormal);
+        startThread(juce::Thread::Priority::low);
     }
 
     ~SpectrumAnalyzer() override {
