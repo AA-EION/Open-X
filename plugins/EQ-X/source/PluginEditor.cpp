@@ -21,7 +21,7 @@ PluginEditor::PluginEditor(PluginProcessor& p)
 
         label.setText(text, juce::dontSendNotification);
         label.setJustificationType(juce::Justification::centred);
-        label.setFont(juce::Font(12.0f, juce::Font::bold));
+        label.setFont(juce::FontOptions(12.0f, juce::Font::bold));
         addAndMakeVisible(label);
     };
 
@@ -68,11 +68,11 @@ void PluginEditor::paint(juce::Graphics& g) {
 
     // Title banner
     g.setColour(openx::ui::OpenXLookAndFeel::TextPrimary);
-    g.setFont(juce::Font(18.0f, juce::Font::bold));
+    g.setFont(juce::FontOptions(18.0f, juce::Font::bold));
     g.drawText("OPEN-X  |  EQ-X", 20, 10, 200, 30, juce::Justification::left);
 
     g.setColour(openx::ui::OpenXLookAndFeel::TextMuted);
-    g.setFont(juce::Font(12.0f, juce::Font::plain));
+    g.setFont(juce::FontOptions(12.0f, juce::Font::plain));
     g.drawText("Dynamic Spectral Equalizer", 200, 12, 200, 30, juce::Justification::left);
 }
 

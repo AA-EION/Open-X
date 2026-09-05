@@ -16,7 +16,7 @@ PluginEditor::PluginEditor(PluginProcessor& p)
 
         label.setText(text, juce::dontSendNotification);
         label.setJustificationType(juce::Justification::centred);
-        label.setFont(juce::Font(12.0f, juce::Font::bold));
+        label.setFont(juce::FontOptions(12.0f, juce::Font::bold));
         addAndMakeVisible(label);
     };
 
@@ -63,11 +63,11 @@ void PluginEditor::paint(juce::Graphics& g) {
     g.fillAll(openx::ui::OpenXLookAndFeel::BackgroundDark);
 
     g.setColour(openx::ui::OpenXLookAndFeel::TextPrimary);
-    g.setFont(juce::Font(18.0f, juce::Font::bold));
+    g.setFont(juce::FontOptions(18.0f, juce::Font::bold));
     g.drawText("OPEN-X  |  DS-X", 20, 10, 200, 30, juce::Justification::left);
 
     g.setColour(openx::ui::OpenXLookAndFeel::TextMuted);
-    g.setFont(juce::Font(12.0f, juce::Font::plain));
+    g.setFont(juce::FontOptions(12.0f, juce::Font::plain));
     g.drawText("Spectral Vocal De-Esser & LPC Formant Isolator", 220, 12, 300, 30, juce::Justification::left);
 }
 
