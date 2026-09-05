@@ -216,7 +216,7 @@ void PluginEditor::paint(juce::Graphics& g) {
     g.drawText("16-Channel Symplectic Algorithmic Reverb — Pro-R 2 Architecture", 225, 12, 450, 30, juce::Justification::left);
 
     // Section Titles in Bottom Control Bar
-    const auto area = getLocalBounds().reduced(16);
+    auto area = getLocalBounds().reduced(16);
     auto bottomPanel = area.removeFromBottom(220);
     const int sectionWidth = (bottomPanel.getWidth() - 16) / 3;
 

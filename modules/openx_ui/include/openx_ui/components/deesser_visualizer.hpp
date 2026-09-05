@@ -365,13 +365,13 @@ private:
             const uint8_t alphaBottom = static_cast<uint8_t>(30.0f * intensity);
 
             // Sibilance highlight fill in golden amber / orange
-            juce::ColourGradient sibGrad(juce::Colour(alphaTop, 0xff, 0xab, 0x00), (startX + lastX) * 0.5f, bounds.getY(),
-                                         juce::Colour(alphaBottom, 0xff, 0x6d, 0x00), (startX + lastX) * 0.5f, bounds.getBottom(), false);
+            juce::ColourGradient sibGrad(juce::Colour::fromRGBA(0xff, 0xab, 0x00, alphaTop), (startX + lastX) * 0.5f, bounds.getY(),
+                                         juce::Colour::fromRGBA(0xff, 0x6d, 0x00, alphaBottom), (startX + lastX) * 0.5f, bounds.getBottom(), false);
             g.setGradientFill(sibGrad);
             g.fillPath(sibFillPath);
 
             // Radiant amber stroke line (only along the curve)
-            g.setColour(juce::Colour(static_cast<uint8_t>(255.0f * intensity), 0xff, 0xc1, 0x07));
+            g.setColour(juce::Colour::fromRGBA(0xff, 0xc1, 0x07, static_cast<uint8_t>(255.0f * intensity)));
             g.strokePath(sibLinePath, juce::PathStrokeType(2.5f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
         }
     }

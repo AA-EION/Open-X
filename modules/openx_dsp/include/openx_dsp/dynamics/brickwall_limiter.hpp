@@ -140,7 +140,6 @@ public:
     void prepare(T sampleRate) noexcept {
         sr = std::max(sampleRate, T{1000.0});
         tpDetector.prepare(sr);
-        outputTpDetector.prepare(sr);
         phaseDispersion.prepare(sr);
         dcBlocker.prepare(sr);
         reset();
@@ -151,7 +150,6 @@ public:
         gainDelayBuffer.fill(1);
         minGainTracker.clear();
         tpDetector.reset();
-        outputTpDetector.reset();
         phaseDispersion.reset();
         dcBlocker.reset();
         writeIndex = 0;
