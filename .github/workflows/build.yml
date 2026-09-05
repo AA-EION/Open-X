@@ -14,7 +14,6 @@ concurrency:
 env:
   BUILD_TYPE: Release
   CMAKE_BUILD_PARALLEL_LEVEL: 4
-  SCCACHE_GHA_ENABLED: "true"
 
 jobs:
   build-suite:
@@ -36,8 +35,6 @@ jobs:
               -DOPENX_BUILD_AU=ON
               -DOPENX_BUILD_AAX=OFF
               -DOPENX_BUILD_UNINSTALLER=ON
-              -DCMAKE_C_COMPILER_LAUNCHER=sccache
-              -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
           - name: Windows-Universal
             os: windows-2022
             platform: windows
@@ -54,9 +51,6 @@ jobs:
       - name: Setup Ninja (macOS)
         if: matrix.platform == 'macos'
         run: brew install ninja
-
-      - name: Run sccache-cache
-        uses: mozilla-actions/sccache-action@v0.0.5
 
       - name: Cache JUCE & FetchContent Dependencies
         uses: actions/cache@v4
@@ -143,9 +137,7 @@ jobs:
             -DOPENX_BUILD_VST3=ON `
             -DOPENX_BUILD_AU=OFF `
             -DOPENX_BUILD_AAX=OFF `
-            -DOPENX_BUILD_UNINSTALLER=OFF `
-            -DCMAKE_C_COMPILER_LAUNCHER=sccache `
-            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+            -DOPENX_BUILD_UNINSTALLER=OFF
           cmake --build build-x64 --config Release --parallel
 
       - name: Run DSP Unit Tests (Windows x64)
@@ -162,9 +154,7 @@ jobs:
             -DOPENX_BUILD_AU=OFF `
             -DOPENX_BUILD_AAX=OFF `
             -DOPENX_BUILD_UNINSTALLER=OFF `
-            -DOPENX_ENABLE_TESTS=OFF `
-            -DCMAKE_C_COMPILER_LAUNCHER=sccache `
-            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+            -DOPENX_ENABLE_TESTS=OFF
           cmake --build build-arm64 --config Release --parallel
 
       - name: Install WiX Toolset v5 (Windows)
