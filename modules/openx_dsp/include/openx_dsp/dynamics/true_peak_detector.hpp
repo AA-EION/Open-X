@@ -31,7 +31,7 @@ public:
         decayCoeff = std::exp(-T{1} / (std::max(releaseMs, T{1.0}) * T{0.001} * sr));
     }
 
-    [[nodiscard]] T processSample(T input) noexcept {
+    [[nodiscard]] T processInstantaneous(T input) noexcept {
         // Push sample into power-of-two circular ring buffer
         buffer[writeIndex] = input;
 
@@ -79,14 +79,20 @@ public:
             }
         }
 
-        // Peak hold and release tracking
+        writeIndex = (writeIndex + 1) & BufferMask;
+        return truePeakEstimate;
+    }
+
+    [[nodiscard]] T processSample(T input) noexcept {
+        const T truePeakEstimate = processInstantaneous(input);
+
+        // Peak hold and release tracking for visual meter ballistics
         if (truePeakEstimate > currentPeak) {
             currentPeak = truePeakEstimate;
         } else {
             currentPeak = currentPeak * decayCoeff;
         }
 
-        writeIndex = (writeIndex + 1) & BufferMask;
         return currentPeak;
     }
 

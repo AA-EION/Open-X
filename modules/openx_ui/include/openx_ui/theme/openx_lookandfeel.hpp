@@ -14,6 +14,7 @@ public:
     static inline const juce::Colour AccentCyan    { 0xff00f0ff };
     static inline const juce::Colour AccentAmber   { 0xffffab00 };
     static inline const juce::Colour AccentRed     { 0xffff1744 };
+    static inline const juce::Colour AccentGreen   { 0xff00e676 };
 
     OpenXLookAndFeel() {
         setColour(juce::ResizableWindow::backgroundColourId, BackgroundDark);
@@ -21,6 +22,22 @@ public:
         setColour(juce::Slider::rotarySliderFillColourId, AccentCyan);
         setColour(juce::Slider::rotarySliderOutlineColourId, OutlineColour);
         setColour(juce::Label::textColourId, TextPrimary);
+
+        setColour(juce::ComboBox::backgroundColourId, PanelDark);
+        setColour(juce::ComboBox::outlineColourId, OutlineColour);
+        setColour(juce::ComboBox::textColourId, TextPrimary);
+        setColour(juce::ComboBox::arrowColourId, AccentCyan);
+        setColour(juce::PopupMenu::backgroundColourId, BackgroundDark);
+        setColour(juce::PopupMenu::textColourId, TextPrimary);
+        setColour(juce::PopupMenu::highlightedBackgroundColourId, PanelDark);
+        setColour(juce::PopupMenu::highlightedTextColourId, AccentCyan);
+
+        setColour(juce::ToggleButton::textColourId, TextPrimary);
+        setColour(juce::ToggleButton::tickColourId, AccentCyan);
+
+        setColour(juce::TextButton::buttonColourId, PanelDark);
+        setColour(juce::TextButton::textColourOffId, TextPrimary);
+        setColour(juce::TextButton::textColourOnId, AccentCyan);
     }
 
     void drawRotarySlider(juce::Graphics& g, int x, int y, int width, int height,

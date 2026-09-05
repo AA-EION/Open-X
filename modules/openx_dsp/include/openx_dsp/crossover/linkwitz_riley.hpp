@@ -5,6 +5,7 @@
 #include <concepts>
 #include <numbers>
 #include <span>
+#include <algorithm>
 
 namespace openx::dsp {
 
@@ -38,7 +39,8 @@ template <std::floating_point T>
 class LinkwitzRiley4 {
 public:
     void prepare(T sampleRate) noexcept {
-        sr = sampleRate;
+        sr = sampleRate > 0 ? sampleRate : T{44100};
+        setCutoff(currentCutoff);
         reset();
     }
 
@@ -49,26 +51,28 @@ public:
     }
 
     void setCutoff(T cutoffHz) noexcept {
-        const T omega = std::numbers::pi_v<T> * cutoffHz / sr;
+        currentCutoff = cutoffHz;
+        const T safeCutoff = std::clamp(cutoffHz, T{10}, sr * T{0.48});
+        const T omega = std::numbers::pi_v<T> * safeCutoff / sr;
         const T theta = std::tan(omega);
         const T thetaSq = theta * theta;
         constexpr T sqrt2 = std::numbers::sqrt2_v<T>;
 
-        const T d = thetaSq + sqrt2 * theta + 1;
+        const T d = thetaSq + sqrt2 * theta + T{1};
         const T b0_lp = thetaSq / d;
-        const T b1_lp = 2 * b0_lp;
+        const T b1_lp = T{2} * b0_lp;
         const T b2_lp = b0_lp;
 
-        const T b0_hp = 1 / d;
-        const T b1_hp = -2 * b0_hp;
+        const T b0_hp = T{1} / d;
+        const T b1_hp = T{-2} * b0_hp;
         const T b2_hp = b0_hp;
 
-        const T a1 = 2 * (thetaSq - 1) / d;
-        const T a2 = (thetaSq - sqrt2 * theta + 1) / d;
+        const T a1 = T{2} * (thetaSq - T{1}) / d;
+        const T a2 = (thetaSq - sqrt2 * theta + T{1}) / d;
 
         const typename Biquad<T>::Coefficients lpCoeff{ b0_lp, b1_lp, b2_lp, a1, a2 };
         const typename Biquad<T>::Coefficients hpCoeff{ b0_hp, b1_hp, b2_hp, a1, a2 };
-        const typename Biquad<T>::Coefficients apCoeff{ a2, a1, 1, a1, a2 };
+        const typename Biquad<T>::Coefficients apCoeff{ a2, a1, T{1}, a1, a2 };
 
         lp1.setCoefficients(lpCoeff);
         lp2.setCoefficients(lpCoeff);
@@ -94,6 +98,7 @@ public:
 
 private:
     T sr{44100};
+    T currentCutoff{1000};
     Biquad<T> lp1, lp2;
     Biquad<T> hp1, hp2;
     Biquad<T> ap;
@@ -106,7 +111,7 @@ public:
     static constexpr size_t NumCrossovers = NumBands - 1;
 
     void prepare(T sampleRate) noexcept {
-        sr = sampleRate;
+        sr = sampleRate > 0 ? sampleRate : T{44100};
         for (auto& xo : crossovers) xo.prepare(sr);
         for (auto& apChain : compensators) {
             for (auto& ap : apChain) ap.prepare(sr);

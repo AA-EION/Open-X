@@ -13,7 +13,7 @@ public:
     enum class Type { Lowpass, Highpass, Bandpass, Bell, LowShelf, HighShelf, Notch };
 
     void prepare(T sampleRate) noexcept {
-        sr = sampleRate;
+        sr = sampleRate > T{0} ? sampleRate : T{48000};
         reset();
     }
 
@@ -26,49 +26,136 @@ public:
         type = filterType;
         const T clampedFreq = std::clamp(freqHz, T{10}, sr * T{0.499});
         const T omega = std::numbers::pi_v<T> * clampedFreq / sr;
-        
-        g = std::tan(omega);
-        r = T{1} / (T{2} * std::max(q, T{0.05}));
-        two_r = T{2} * r;
-        twoR_plus_g = two_r + g;
-        h = T{1} / (T{1} + two_r * g + g * g);
-        gain = gainLinear;
-    }
+        const T clampedQ = std::max(q, T{0.05});
+        k = T{1} / clampedQ;
 
-    void setGain(T gainLinear) noexcept {
-        gain = gainLinear;
-    }
-
-    [[nodiscard]] T processSample(T x) noexcept {
-        const T hp = (x - twoR_plus_g * s1 - s2) * h;
-        const T bp = g * hp + s1;
-        s1 = g * hp + bp;
-        const T lp = g * bp + s2;
-        s2 = g * bp + lp;
+        const T gLinear = std::max(gainLinear, T{1e-6});
+        const T A = std::sqrt(gLinear);
+        const T g0 = std::tan(omega);
 
         switch (type) {
-            case Type::Lowpass:   return lp;
-            case Type::Highpass:  return hp;
-            case Type::Bandpass:  return bp;
-            case Type::Bell:      return x + (gain - T{1}) * (two_r * bp);
-            case Type::LowShelf:  return x + (gain - T{1}) * lp;
-            case Type::HighShelf: return x + (gain - T{1}) * hp;
-            case Type::Notch:     return lp + hp;
-            default:              return x;
+            case Type::Lowpass: { // High Cut (12 dB/oct)
+                g = g0;
+                updateInternalCoefficients();
+                m0 = T{0};
+                m1 = T{0};
+                m2 = T{1};
+                break;
+            }
+            case Type::Highpass: { // Low Cut (12 dB/oct)
+                g = g0;
+                updateInternalCoefficients();
+                m0 = T{1};
+                m1 = -k;
+                m2 = -T{1};
+                break;
+            }
+            case Type::Bandpass: { // Normalized Bandpass (0 dB peak)
+                g = g0;
+                updateInternalCoefficients();
+                m0 = T{0};
+                m1 = k; // k * v1 normalizes bandpass peak to 1.0 (0 dB)
+                m2 = T{0};
+                break;
+            }
+            case Type::Bell: { // Peaking Bell
+                g = g0;
+                updateInternalCoefficients();
+                m0 = T{1};
+                m1 = k * (gLinear - T{1});
+                m2 = T{0};
+                break;
+            }
+            case Type::LowShelf: { // Low Shelf
+                g = g0 / std::max(std::sqrt(A), T{1e-3});
+                updateInternalCoefficients();
+                m0 = T{1};
+                m1 = k * (A - T{1});
+                m2 = gLinear - T{1};
+                break;
+            }
+            case Type::HighShelf: { // High Shelf
+                g = g0 * std::max(std::sqrt(A), T{1e-3});
+                updateInternalCoefficients();
+                m0 = gLinear;
+                m1 = k * (T{1} - A) * A;
+                m2 = T{1} - gLinear;
+                break;
+            }
+            case Type::Notch: { // Notch
+                g = g0;
+                updateInternalCoefficients();
+                m0 = T{1};
+                m1 = -k;
+                m2 = T{0};
+                break;
+            }
         }
     }
 
+    void setGain(T gainLinear) noexcept {
+        const T gLinear = std::max(gainLinear, T{1e-6});
+        switch (type) {
+            case Type::Bell: {
+                m1 = k * (gLinear - T{1});
+                break;
+            }
+            case Type::LowShelf: {
+                const T A = std::sqrt(gLinear);
+                m1 = k * (A - T{1});
+                m2 = gLinear - T{1};
+                break;
+            }
+            case Type::HighShelf: {
+                const T A = std::sqrt(gLinear);
+                m0 = gLinear;
+                m1 = k * (T{1} - A) * A;
+                m2 = T{1} - gLinear;
+                break;
+            }
+            default:
+                break;
+        }
+    }
+
+    [[nodiscard]] T processSample(T x) noexcept {
+        const T v3 = x - s2;
+        const T v1 = a1 * s1 + a2 * v3;
+        const T v2 = s2 + a2 * s1 + a3 * v3;
+        s1 = T{2} * v1 - s1;
+        s2 = T{2} * v2 - s2;
+        return m0 * x + m1 * v1 + m2 * v2;
+    }
+
 private:
+    void updateInternalCoefficients() noexcept {
+        a1 = T{1} / (T{1} + g * (g + k));
+        a2 = g * a1;
+        a3 = g * a2;
+    }
+
     T sr{44100};
     Type type{Type::Bell};
-    T g{0}, r{0}, two_r{0}, twoR_plus_g{0}, h{0}, gain{1};
+    T g{0}, k{1};
+    T a1{0}, a2{0}, a3{0};
+    T m0{1}, m1{0}, m2{0};
     T s1{0}, s2{0};
 };
 
 template <std::floating_point T>
 class DynamicBiquadEngine {
 public:
+    enum class FilterType : int {
+        Bell = 0,
+        LowShelf = 1,
+        HighShelf = 2,
+        Notch = 3,
+        LowCut = 4,
+        HighCut = 5
+    };
+
     struct Parameters {
+        FilterType filterType{FilterType::Bell};
         T frequency{1000};
         T q{0.7071};
         T staticGainDb{0};
@@ -79,10 +166,11 @@ public:
         T attackMs{10};
         T releaseMs{100};
         bool downward{true};
+        bool bypassed{false};
     };
 
     void prepare(T sampleRate) noexcept {
-        sr = sampleRate;
+        sr = sampleRate > T{0} ? sampleRate : T{48000};
         filter.prepare(sr);
         sidechainFilter.prepare(sr);
         reset();
@@ -92,7 +180,8 @@ public:
         filter.reset();
         sidechainFilter.reset();
         envelope = 0;
-        currentGainLinear = 1;
+        currentGainLinear = staticGainLinear;
+        currentDeltaDb = 0;
     }
 
     void setParameters(const Parameters& p) noexcept {
@@ -109,14 +198,31 @@ public:
         lowerKneeLinear = std::pow(T{10}, lowerKneeDb / T{20});
         absDynGainMax = std::abs(params.dynamicGainMaxDb);
 
+        if (envelope == T{0}) {
+            currentGainLinear = staticGainLinear;
+        }
+
+        // Sidechain filter: 0 dB normalized Bandpass centered at band frequency & Q
         sidechainFilter.setParameters(
             TptStateVariableFilter<T>::Type::Bandpass,
             params.frequency,
             params.q,
             T{1}
         );
+
+        typename TptStateVariableFilter<T>::Type svfType = TptStateVariableFilter<T>::Type::Bell;
+        switch (params.filterType) {
+            case FilterType::Bell:      svfType = TptStateVariableFilter<T>::Type::Bell; break;
+            case FilterType::LowShelf:  svfType = TptStateVariableFilter<T>::Type::LowShelf; break;
+            case FilterType::HighShelf: svfType = TptStateVariableFilter<T>::Type::HighShelf; break;
+            case FilterType::Notch:     svfType = TptStateVariableFilter<T>::Type::Notch; break;
+            case FilterType::LowCut:    svfType = TptStateVariableFilter<T>::Type::Highpass; break;
+            case FilterType::HighCut:   svfType = TptStateVariableFilter<T>::Type::Lowpass; break;
+            default:                    svfType = TptStateVariableFilter<T>::Type::Bell; break;
+        }
+
         filter.setParameters(
-            TptStateVariableFilter<T>::Type::Bell,
+            svfType,
             params.frequency,
             params.q,
             currentGainLinear
@@ -124,7 +230,12 @@ public:
     }
 
     [[nodiscard]] T processSample(T input) noexcept {
-        // 1. Extract sidechain signal through bandpass filter centered at dynamic band
+        if (params.bypassed) {
+            currentDeltaDb = 0;
+            return input;
+        }
+
+        // 1. Extract sidechain signal through normalized bandpass filter centered at dynamic band
         const T scSample = sidechainFilter.processSample(input);
         const T absSc = std::abs(scSample);
 
@@ -132,14 +243,14 @@ public:
         const T coeff = (absSc > envelope) ? attCoeff : relCoeff;
         envelope = coeff * envelope + (T{1} - coeff) * absSc;
 
-        // 3. Compute dynamic modulation in decibels (cached / bypassed below threshold)
+        // 3. Compute dynamic modulation in decibels
         T targetLinear = staticGainLinear;
+        T deltaDb{0};
         if (absDynGainMax > T{1e-6} && envelope > lowerKneeLinear) {
             constexpr T minLinear = T{1e-5};
             const T envDb = T{20} * std::log10(std::max(envelope, minLinear));
             const T deltaOvershoot = envDb - params.thresholdDb;
 
-            T deltaDb{0};
             if (params.kneeDb > T{0} && deltaOvershoot >= -halfKnee && deltaOvershoot <= halfKnee) {
                 const T kneeFactor = deltaOvershoot + halfKnee;
                 deltaDb = slope * (kneeFactor * kneeFactor) * invTwoKnee;
@@ -151,17 +262,77 @@ public:
             if (params.downward) deltaDb = -deltaDb;
 
             const T totalGainDb = params.staticGainDb + deltaDb;
-            targetLinear = std::exp(totalGainDb * (std::numbers::ln10_v<T> / T{20}));
+            targetLinear = std::pow(T{10}, totalGainDb / T{20});
         }
 
-        // 4. Smooth parameter coefficient update (one-pole smoother)
-        constexpr T gainSmoothCoeff = T{0.995};
-        currentGainLinear = gainSmoothCoeff * currentGainLinear + (T{1} - gainSmoothCoeff) * targetLinear;
+        currentDeltaDb = deltaDb;
+        currentGainLinear = targetLinear;
 
-        // 5. Apply dynamic filter (cached SVF parameters, only updating gain)
+        // 4. Apply dynamic filter
         filter.setGain(currentGainLinear);
 
         return filter.processSample(input);
+    }
+
+    [[nodiscard]] T processSoloSample(T input) noexcept {
+        // Isolated 0 dB normalized resonance auditioning
+        return sidechainFilter.processSample(input);
+    }
+
+    [[nodiscard]] T getDynamicDeltaDb() const noexcept {
+        return currentDeltaDb;
+    }
+
+    [[nodiscard]] T getCurrentGainLinear() const noexcept {
+        return currentGainLinear;
+    }
+
+    [[nodiscard]] static T computeMagnitudeDb(FilterType type, T f, T f0, T q, T gainDb) noexcept {
+        const T clampedF0 = std::max(f0, T{1});
+        const T w = f / clampedF0;
+        const T w2 = w * w;
+        const T oneMinusW2Sq = (T{1} - w2) * (T{1} - w2);
+        const T clampedQ = std::max(q, T{0.05});
+        const T qTerm = (w / clampedQ) * (w / clampedQ);
+        const T denom = std::max(oneMinusW2Sq + qTerm, T{1e-12});
+        const T linGain = std::pow(T{10}, gainDb / T{20});
+        const T g2 = linGain * linGain;
+
+        T magSq = T{1};
+        switch (type) {
+            case FilterType::Bell:
+                magSq = (oneMinusW2Sq + qTerm * g2) / denom;
+                break;
+            case FilterType::LowShelf: {
+                const T A = std::pow(T{10}, gainDb / T{40});
+                const T A2 = A * A;
+                const T termQ = (A / (clampedQ * clampedQ)) * w2;
+                const T num = (A - w2) * (A - w2) + termQ;
+                const T den = (T{1} - A * w2) * (T{1} - A * w2) + termQ;
+                magSq = A2 * (num / std::max(den, T{1e-12}));
+                break;
+            }
+            case FilterType::HighShelf: {
+                const T A = std::pow(T{10}, gainDb / T{40});
+                const T A2 = A * A;
+                const T termQ = (A / (clampedQ * clampedQ)) * w2;
+                const T num = (T{1} - A * w2) * (T{1} - A * w2) + termQ;
+                const T den = (A - w2) * (A - w2) + termQ;
+                magSq = A2 * (num / std::max(den, T{1e-12}));
+                break;
+            }
+            case FilterType::Notch:
+                magSq = oneMinusW2Sq / denom;
+                break;
+            case FilterType::LowCut:
+                magSq = (w2 * w2) / denom;
+                break;
+            case FilterType::HighCut:
+                magSq = T{1} / denom;
+                break;
+        }
+
+        return T{10} * std::log10(std::max(magSq, T{1e-12}));
     }
 
 private:
@@ -174,6 +345,7 @@ private:
     T absDynGainMax{0};
     T envelope{0};
     T currentGainLinear{1};
+    T currentDeltaDb{0};
     TptStateVariableFilter<T> filter;
     TptStateVariableFilter<T> sidechainFilter;
 };
