@@ -3,6 +3,8 @@ name: Open-X Monorepo CI/CD
 on:
   push:
     branches: [ main, develop ]
+    tags:
+      - 'v*'
   pull_request:
     branches: [ main ]
   workflow_dispatch:
@@ -189,3 +191,99 @@ jobs:
           name: Open-X-Suite-Windows-Universal-VST3
           path: staging/plugins/
           retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-suite]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Download macOS Single Bundle Installer
+        uses: actions/download-artifact@v4
+        with:
+          name: Open-X-Suite-macOS-Installer
+          path: release-assets/
+
+      - name: Download macOS GUI Uninstaller App
+        uses: actions/download-artifact@v4
+        with:
+          name: Open-X-Uninstaller-macOS
+          path: release-assets/Open-X Uninstaller.app
+
+      - name: Download macOS Raw Plugins
+        uses: actions/download-artifact@v4
+        with:
+          name: Open-X-Suite-macOS-Plugins
+          path: raw-macos-plugins/
+
+      - name: Download Windows Single Bundle Installer
+        uses: actions/download-artifact@v4
+        with:
+          name: Open-X-Suite-Windows-Installer
+          path: release-assets/
+
+      - name: Download Windows Universal VST3 Plugins
+        uses: actions/download-artifact@v4
+        with:
+          name: Open-X-Suite-Windows-Universal-VST3
+          path: raw-windows-vst3/
+
+      - name: Package Archives for Release
+        run: |
+          cd release-assets
+          if [ -d "Open-X Uninstaller.app" ]; then
+            zip -r -y "Open-X-Uninstaller-macOS.zip" "Open-X Uninstaller.app"
+            rm -rf "Open-X Uninstaller.app"
+          fi
+          cd ..
+          if [ -d "raw-macos-plugins" ]; then
+            cd raw-macos-plugins
+            zip -r -y "../release-assets/Open-X-Suite-macOS-Plugins.zip" .
+            cd ..
+          fi
+          if [ -d "raw-windows-vst3" ]; then
+            cd raw-windows-vst3
+            zip -r "../release-assets/Open-X-Suite-Windows-Universal-VST3.zip" .
+            cd ..
+          fi
+          ls -lh release-assets/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          name: Open-X DSP Suite ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          body: |
+            ## Open-X DSP Professional Audio Suite ${{ github.ref_name }}
+
+            Open-X DSP is a 7-plugin suite engineered with modern C++20, JUCE 8, and custom DSP topologies.
+
+            ### Included Plugins:
+            - **EQ-X**: 8-band dynamic parametric equalizer with proportional-Q and real-time spectrum analyzer.
+            - **Comp-X**: Analytically modeled compressor with transient punch injection and quad-state envelope detection.
+            - **Limit-X**: ITU-R BS.1770-4 true-peak brickwall limiter with allpass phase dispersion.
+            - **Verb-X**: 16-delay-line feedback delay network (FDN) reverb with Hamiltonian chaotic perturbation.
+            - **MB-X**: 3-band Linkwitz-Riley crossover multiband dynamics processor.
+            - **DS-X**: Spectral de-esser with Burg LPC vocal tract formant residual tracking.
+            - **Gate-X**: Lookahead predictive noise gate with Schmitt trigger hysteresis.
+
+            ### Installers & Binaries:
+            - **macOS Single Bundle Installer**: `Open-X-Suite-macOS.pkg`
+              - Universal Mach-O binary (`arm64` Apple Silicon M1–M4 + `x86_64` Intel)
+              - VST3 & AU formats
+              - Ad-hoc codesigned for Gatekeeper
+              - Installs the standalone `Open-X Uninstaller.app` in `/Applications`
+            - **Windows Single Bundle Installer**: `Open-X-Suite-Windows.msi`
+              - Universal multi-architecture VST3 bundles (`x86_64-win` + `arm64-win`)
+              - WiX v5 architecture with feature tree
+              - Start Menu uninstaller shortcut + clean Windows Add/Remove Programs registration
+            - **macOS GUI Uninstaller**: `Open-X-Uninstaller-macOS.zip` (standalone `.app`)
+            - **Raw Universal Plugin Bundles**: `Open-X-Suite-macOS-Plugins.zip` and `Open-X-Suite-Windows-Universal-VST3.zip`
