@@ -682,7 +682,7 @@ private:
         juce::String titleLine = "Band " + juce::String(static_cast<int>(b + 1)) + " • " + getFilterTypeName(band.type);
         juce::String subLine = freqStr + " (" + noteStr + ") | " + gainStr + " | Q: " + juce::String(band.q, 2);
         if (band.isDynamic) {
-            subLine += " | Dyn: " + (band.dynamicGainDb >= 0.0f ? "+" : "") + juce::String(band.dynamicGainDb, 1) + " dB";
+            subLine += juce::String(" | Dyn: ") + (band.dynamicGainDb >= 0.0f ? "+" : "") + juce::String(band.dynamicGainDb, 1) + " dB";
         }
 
         const float badgeW = 230.0f;

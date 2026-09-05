@@ -2,7 +2,7 @@ juce_add_gui_app(OpenXUninstaller
     PRODUCT_NAME "Open-X Uninstaller"
     COMPANY_NAME "Open-X DSP"
     BUNDLE_IDENTIFIER "com.openxdsp.uninstaller"
-    VERSION 1.0.0
+    VERSION ${PROJECT_VERSION}
 )
 
 set(UNINSTALLER_SOURCES

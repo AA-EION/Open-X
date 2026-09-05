@@ -10,39 +10,90 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
 
 env:
   BUILD_TYPE: Release
   CMAKE_BUILD_PARALLEL_LEVEL: 4
 
 jobs:
-  build-suite:
-    name: ${{ matrix.name }} (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: macOS-Universal
-            os: macos-14
-            platform: macos
-            arch: universal
-            generator: Ninja
-            cmake_args: >-
-              -DCMAKE_BUILD_TYPE=Release
-              -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
-              -DOPENX_BUILD_VST3=ON
-              -DOPENX_BUILD_AU=ON
-              -DOPENX_BUILD_AAX=OFF
-              -DOPENX_BUILD_UNINSTALLER=ON
-          - name: Windows-Universal
-            os: windows-2022
-            platform: windows
-            arch: universal
-            generator: "Visual Studio 17 2022"
+  # ------------------------------------------------------------------
+  # Resolve a single numeric version (major.minor.patch) for every
+  # artefact, installer and plugin binary produced by this run.
+  # Tag pushes (v1.2.3) drive the released version; everything else
+  # builds as the in-tree development version.
+  # ------------------------------------------------------------------
+  version:
+    name: Resolve Version
+    # Same-repo branches are already covered by the push trigger, so only run
+    # the pull_request event for forks. This avoids duplicate 30+ minute runs.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      prerelease: ${{ steps.resolve.outputs.prerelease }}
+    steps:
+      - name: Resolve version from ref
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            raw="${GITHUB_REF_NAME#v}"
+          else
+            raw="1.0.0"
+          fi
+          # Installer engines (WiX/pkgbuild) only accept numeric versions,
+          # so strip any pre-release/build metadata suffix.
+          numeric="$(printf '%s' "$raw" | sed -E 's/^v?([0-9]+(\.[0-9]+)*).*$/\1/')"
+          if [[ ! "$numeric" =~ ^[0-9]+(\.[0-9]+)*$ ]]; then
+            numeric="1.0.0"
+          fi
+          # Normalise to exactly major.minor.patch
+          IFS='.' read -r major minor patch _ <<< "${numeric}.0.0.0"
+          version="${major}.${minor}.${patch}"
+          prerelease=false
+          if [[ "$raw" == *-* ]]; then prerelease=true; fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $version (raw='$raw', prerelease=$prerelease)"
 
+  # ------------------------------------------------------------------
+  # Fast runner-side validation gate: catches workflow syntax/expression
+  # mistakes in seconds instead of after a 30 minute build.
+  # ------------------------------------------------------------------
+  validate:
+    name: Validate Workflows
+    needs: [ version ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Lint GitHub Actions Workflows
+        run: |
+          set -euo pipefail
+          bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color -shellcheck= -pyflakes= .github/workflows/*.yml
+
+  # ------------------------------------------------------------------
+  # macOS universal (arm64 + x86_64) VST3/AU suite, GUI uninstaller
+  # and single-bundle .pkg installer.
+  # ------------------------------------------------------------------
+  macos:
+    name: macOS Universal Suite
+    needs: [ version, validate ]
+    runs-on: macos-14
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -50,152 +101,263 @@ jobs:
           submodules: recursive
           fetch-depth: 1
 
-      - name: Setup Ninja (macOS)
-        if: matrix.platform == 'macos'
-        run: brew install ninja
+      - name: Setup Ninja
+        run: brew list ninja >/dev/null 2>&1 || brew install ninja
+
+      - name: Cache JUCE & FetchContent Dependencies
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: macos-deps-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: |
+            macos-deps-
+
+      - name: Configure CMake (Universal)
+        run: >-
+          cmake -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+          -DOPENX_VERSION="${VERSION}"
+          -DOPENX_BUILD_VST3=ON
+          -DOPENX_BUILD_AU=ON
+          -DOPENX_BUILD_AAX=OFF
+          -DOPENX_BUILD_UNINSTALLER=ON
+          -DOPENX_ENABLE_TESTS=ON
+
+      - name: Build Suite & Uninstaller
+        # -k 0 keeps ninja going after the first failure so a broken build
+        # reports every compiler diagnostic in a single CI run.
+        # Parallelism comes from CMAKE_BUILD_PARALLEL_LEVEL.
+        run: cmake --build build --config Release -- -k 0
+
+      - name: Run DSP Unit Tests
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Ad-Hoc Sign Mach-O Bundles
+        run: |
+          set -euo pipefail
+          echo "Ad-hoc signing all plugins, components and the uninstaller app..."
+          find build -type d \( -name '*.vst3' -o -name '*.component' -o -name '*.app' \) \
+            -prune -exec codesign --force --deep -s - --options=runtime {} \;
+
+      - name: Stage Raw Plugin Bundles & Uninstaller
+        run: |
+          set -euo pipefail
+          rm -rf staging
+          mkdir -p staging/plugins
+
+          find build/plugins -type d \( -name '*.vst3' -o -name '*.component' \) \
+            -prune -exec cp -R {} staging/plugins/ \;
+
+          app=""
+          while IFS= read -r candidate; do
+            app="$candidate"
+          done < <(find build -type d -name 'Open-X Uninstaller.app' -prune -print)
+          if [[ -z "$app" ]]; then
+            echo "::error::Open-X Uninstaller.app was not produced by the build"
+            exit 1
+          fi
+          cp -R "$app" staging/
+
+          vst3_count=$(find staging/plugins -maxdepth 1 -name '*.vst3' | wc -l | tr -d ' ')
+          au_count=$(find staging/plugins -maxdepth 1 -name '*.component' | wc -l | tr -d ' ')
+          echo "Staged $vst3_count VST3 and $au_count AU bundles"
+          ls -1 staging/plugins
+          if [[ "$vst3_count" -ne 7 || "$au_count" -ne 7 ]]; then
+            echo "::error::Expected 7 VST3 and 7 AU bundles, found $vst3_count/$au_count"
+            exit 1
+          fi
+
+      - name: Build macOS PKG Installer Bundle
+        run: python3 packaging/macos/packager_macOS.py
+
+      - name: Verify PKG Installer
+        run: |
+          set -euo pipefail
+          pkg="staging/Open-X-Suite-macOS.pkg"
+          if [[ ! -f "$pkg" ]]; then
+            echo "::error::$pkg was not produced"
+            exit 1
+          fi
+          ls -lh "$pkg"
+          installer -pkginfo -pkg "$pkg" || true
+
+      # ditto preserves bundle symlinks, resource forks and the
+      # executable permission bits that upload-artifact would drop.
+      - name: Create macOS Release Archives
+        run: |
+          set -euo pipefail
+          ditto -c -k --sequesterRsrc --keepParent \
+            "staging/Open-X Uninstaller.app" "staging/Open-X-Uninstaller-macOS.zip"
+          ditto -c -k --sequesterRsrc "staging/plugins" "staging/Open-X-Suite-macOS-Plugins.zip"
+          ls -lh staging/*.zip
+
+      - name: Upload macOS Single Bundle Installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Open-X-Suite-macOS-Installer
+          path: staging/Open-X-Suite-macOS.pkg
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload macOS GUI Uninstaller App
+        uses: actions/upload-artifact@v4
+        with:
+          name: Open-X-Uninstaller-macOS
+          path: staging/Open-X-Uninstaller-macOS.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload macOS Raw Plugin Bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: Open-X-Suite-macOS-Plugins
+          path: staging/Open-X-Suite-macOS-Plugins.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  # ------------------------------------------------------------------
+  # Windows universal (x86_64-win + arm64-win) VST3 suite and single
+  # bundle WiX v5 MSI installer.
+  # ------------------------------------------------------------------
+  windows:
+    name: Windows Universal Suite
+    needs: [ version, validate ]
+    runs-on: windows-2022
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
 
       - name: Cache JUCE & FetchContent Dependencies
         uses: actions/cache@v4
         with:
           path: |
-            ${{ github.workspace }}/build/_deps
-            ${{ github.workspace }}/build-x64/_deps
-            ${{ github.workspace }}/build-arm64/_deps
-            ~/.cmake/packages
-          key: ${{ runner.os }}-deps-${{ hashFiles('**/CMakeLists.txt') }}
+            build-x64/_deps
+            build-arm64/_deps
+          key: windows-deps-${{ hashFiles('CMakeLists.txt') }}
           restore-keys: |
-            ${{ runner.os }}-deps-
+            windows-deps-
 
-      # ----------------------------------------------------
-      # macOS Universal Build & Packaging
-      # ----------------------------------------------------
-      - name: Configure CMake (macOS Universal)
-        if: matrix.platform == 'macos'
-        run: >
-          cmake -B build
-          -G "${{ matrix.generator }}"
-          ${{ matrix.cmake_args }}
-
-      - name: Build Suite & Uninstaller (macOS Universal)
-        if: matrix.platform == 'macos'
-        run: cmake --build build --config Release --parallel
-
-      - name: Run DSP Unit Tests (macOS)
-        if: matrix.platform == 'macos'
-        run: ctest --test-dir build -C Release --output-on-failure
-
-      - name: Ad-Hoc Sign Mach-O Binaries & Bundles (macOS)
-        if: matrix.platform == 'macos'
-        run: |
-          echo "Ad-hoc signing all plugins, components, and uninstaller application with hardened runtime..."
-          find build -name "*.vst3" -exec codesign --force --deep -s - --options=runtime {} \; || true
-          find build -name "*.component" -exec codesign --force --deep -s - --options=runtime {} \; || true
-          find build -name "*.app" -exec codesign --force --deep -s - --options=runtime {} \; || true
-
-      - name: Build macOS PKG Installer Bundle
-        if: matrix.platform == 'macos'
-        run: python3 packaging/macos/packager_macOS.py
-
-      - name: Stage Artifacts (macOS)
-        if: matrix.platform == 'macos'
-        run: |
-          mkdir -p staging/plugins
-          find build/plugins -name "*.vst3" -maxdepth 4 -exec cp -R {} staging/plugins/ \; || true
-          find build/plugins -name "*.component" -maxdepth 4 -exec cp -R {} staging/plugins/ \; || true
-          find build -name "Open-X Uninstaller.app" -exec cp -R {} staging/ \; || true
-
-      - name: Upload macOS Single Bundle Installer
-        if: matrix.platform == 'macos'
-        uses: actions/upload-artifact@v4
-        with:
-          name: Open-X-Suite-macOS-Installer
-          path: staging/Open-X-Suite-macOS.pkg
-          retention-days: 14
-
-      - name: Upload macOS GUI Uninstaller App
-        if: matrix.platform == 'macos'
-        uses: actions/upload-artifact@v4
-        with:
-          name: Open-X-Uninstaller-macOS
-          path: staging/Open-X Uninstaller.app
-          retention-days: 14
-
-      - name: Upload macOS Raw Plugins
-        if: matrix.platform == 'macos'
-        uses: actions/upload-artifact@v4
-        with:
-          name: Open-X-Suite-macOS-Plugins
-          path: staging/plugins/
-          retention-days: 14
-
-      # ----------------------------------------------------
-      # Windows Universal Build & WiX MSI Packaging
-      # ----------------------------------------------------
-      - name: Configure & Build x64 Suite (Windows)
-        if: matrix.platform == 'windows'
+      - name: Configure & Build x64 Suite
         shell: pwsh
         run: |
-          cmake -B build-x64 -G "${{ matrix.generator }}" -A x64 `
+          cmake -B build-x64 -G "Visual Studio 17 2022" -A x64 `
+            -DOPENX_VERSION="$env:VERSION" `
             -DOPENX_BUILD_VST3=ON `
             -DOPENX_BUILD_AU=OFF `
             -DOPENX_BUILD_AAX=OFF `
-            -DOPENX_BUILD_UNINSTALLER=OFF
+            -DOPENX_BUILD_UNINSTALLER=OFF `
+            -DOPENX_ENABLE_TESTS=ON
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build build-x64 --config Release --parallel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Run DSP Unit Tests (Windows x64)
-        if: matrix.platform == 'windows'
+      - name: Run DSP Unit Tests (x64)
         shell: pwsh
         run: ctest --test-dir build-x64 -C Release --output-on-failure
 
-      - name: Configure & Build ARM64 Suite (Windows)
-        if: matrix.platform == 'windows'
+      - name: Configure & Build ARM64 Suite
         shell: pwsh
         run: |
-          cmake -B build-arm64 -G "${{ matrix.generator }}" -A ARM64 `
+          cmake -B build-arm64 -G "Visual Studio 17 2022" -A ARM64 `
+            -DOPENX_VERSION="$env:VERSION" `
             -DOPENX_BUILD_VST3=ON `
             -DOPENX_BUILD_AU=OFF `
             -DOPENX_BUILD_AAX=OFF `
             -DOPENX_BUILD_UNINSTALLER=OFF `
             -DOPENX_ENABLE_TESTS=OFF
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build build-arm64 --config Release --parallel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Install WiX Toolset v5 (Windows)
-        if: matrix.platform == 'windows'
+      - name: Install WiX Toolset v5
         shell: pwsh
         run: |
-          dotnet tool install --global wix --version 5.0.2 || true
-          $dotnetTools = "$HOME\.dotnet\tools"
-          if (Test-Path $dotnetTools) {
-              $env:PATH = "$dotnetTools;$env:PATH"
-              "$dotnetTools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $ErrorActionPreference = 'Continue'
+          dotnet tool install --global wix --version 5.0.2
+          if ($LASTEXITCODE -ne 0) {
+            dotnet tool update --global wix --version 5.0.2
           }
-          wix extension add --global WixToolset.UI.wixext/5.0.2 || wix extension add WixToolset.UI.wixext/5.0.2
+          $tools = Join-Path $env:USERPROFILE '.dotnet\tools'
+          if (-not (Test-Path $tools)) {
+            Write-Error "dotnet global tools directory not found at $tools"
+            exit 1
+          }
+          $env:PATH = "$tools;$env:PATH"
+          Add-Content -Path $env:GITHUB_PATH -Value $tools -Encoding utf8
+          & "$tools\wix.exe" --version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          & "$tools\wix.exe" extension add --global WixToolset.UI.wixext/5.0.2
+          if ($LASTEXITCODE -ne 0) {
+            & "$tools\wix.exe" extension add WixToolset.UI.wixext/5.0.2
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          }
 
       - name: Build Windows Universal MSI Installer Bundle
-        if: matrix.platform == 'windows'
         shell: pwsh
         run: python packaging/windows/packager_Windows_WiX.py
 
+      - name: Verify MSI & Universal Bundles
+        shell: pwsh
+        run: |
+          $msi = 'staging/Open-X-Suite-Windows.msi'
+          if (-not (Test-Path $msi)) {
+            Write-Output "::error::$msi was not produced"
+            exit 1
+          }
+          Get-Item $msi | Format-List Name, Length
+
+          $bundles = @(Get-ChildItem 'staging/plugins' -Directory -Filter '*.vst3')
+          Write-Output "Staged $($bundles.Count) VST3 bundles"
+          if ($bundles.Count -ne 7) {
+            Write-Output "::error::Expected 7 VST3 bundles, found $($bundles.Count)"
+            exit 1
+          }
+          foreach ($b in $bundles) {
+            $x64 = Test-Path (Join-Path $b.FullName 'Contents\x86_64-win')
+            $arm = Test-Path (Join-Path $b.FullName 'Contents\arm64-win')
+            Write-Output "$($b.Name): x86_64-win=$x64 arm64-win=$arm"
+            if (-not $x64 -or -not $arm) {
+              Write-Output "::error::$($b.Name) is not a universal bundle (x64=$x64 arm64=$arm)"
+              exit 1
+            }
+          }
+
+      - name: Create Windows Plugin Archive
+        shell: pwsh
+        run: |
+          Compress-Archive -Path 'staging/plugins/*' `
+            -DestinationPath 'staging/Open-X-Suite-Windows-Universal-VST3.zip' -Force
+          Get-Item 'staging/Open-X-Suite-Windows-Universal-VST3.zip' | Format-List Name, Length
+
       - name: Upload Windows Single Bundle Installer
-        if: matrix.platform == 'windows'
         uses: actions/upload-artifact@v4
         with:
           name: Open-X-Suite-Windows-Installer
           path: staging/Open-X-Suite-Windows.msi
+          if-no-files-found: error
           retention-days: 14
 
       - name: Upload Windows Universal VST3 Plugins
-        if: matrix.platform == 'windows'
         uses: actions/upload-artifact@v4
         with:
           name: Open-X-Suite-Windows-Universal-VST3
-          path: staging/plugins/
+          path: staging/Open-X-Suite-Windows-Universal-VST3.zip
+          if-no-files-found: error
           retention-days: 14
 
+  # ------------------------------------------------------------------
+  # Publish a GitHub Release with every installer/archive on tag push.
+  # ------------------------------------------------------------------
   release:
     name: Publish GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-suite]
+    needs: [ version, macos, windows ]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -203,55 +365,31 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Download macOS Single Bundle Installer
+      - name: Download All Release Artifacts
         uses: actions/download-artifact@v4
         with:
-          name: Open-X-Suite-macOS-Installer
-          path: release-assets/
+          path: release-assets
+          merge-multiple: true
 
-      - name: Download macOS GUI Uninstaller App
-        uses: actions/download-artifact@v4
-        with:
-          name: Open-X-Uninstaller-macOS
-          path: release-assets/Open-X Uninstaller.app
-
-      - name: Download macOS Raw Plugins
-        uses: actions/download-artifact@v4
-        with:
-          name: Open-X-Suite-macOS-Plugins
-          path: raw-macos-plugins/
-
-      - name: Download Windows Single Bundle Installer
-        uses: actions/download-artifact@v4
-        with:
-          name: Open-X-Suite-Windows-Installer
-          path: release-assets/
-
-      - name: Download Windows Universal VST3 Plugins
-        uses: actions/download-artifact@v4
-        with:
-          name: Open-X-Suite-Windows-Universal-VST3
-          path: raw-windows-vst3/
-
-      - name: Package Archives for Release
+      - name: Verify Release Assets
         run: |
-          cd release-assets
-          if [ -d "Open-X Uninstaller.app" ]; then
-            zip -r -y "Open-X-Uninstaller-macOS.zip" "Open-X Uninstaller.app"
-            rm -rf "Open-X Uninstaller.app"
-          fi
-          cd ..
-          if [ -d "raw-macos-plugins" ]; then
-            cd raw-macos-plugins
-            zip -r -y "../release-assets/Open-X-Suite-macOS-Plugins.zip" .
-            cd ..
-          fi
-          if [ -d "raw-windows-vst3" ]; then
-            cd raw-windows-vst3
-            zip -r "../release-assets/Open-X-Suite-Windows-Universal-VST3.zip" .
-            cd ..
-          fi
-          ls -lh release-assets/
+          set -euo pipefail
+          ls -lhR release-assets
+          expected=(
+            "Open-X-Suite-macOS.pkg"
+            "Open-X-Uninstaller-macOS.zip"
+            "Open-X-Suite-macOS-Plugins.zip"
+            "Open-X-Suite-Windows.msi"
+            "Open-X-Suite-Windows-Universal-VST3.zip"
+          )
+          missing=0
+          for f in "${expected[@]}"; do
+            if [[ ! -s "release-assets/$f" ]]; then
+              echo "::error::Missing release asset: $f"
+              missing=1
+            fi
+          done
+          exit $missing
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -259,7 +397,8 @@ jobs:
           files: release-assets/*
           name: Open-X DSP Suite ${{ github.ref_name }}
           draft: false
-          prerelease: false
+          prerelease: ${{ needs.version.outputs.prerelease == 'true' }}
+          fail_on_unmatched_files: true
           generate_release_notes: true
           body: |
             ## Open-X DSP Professional Audio Suite ${{ github.ref_name }}
