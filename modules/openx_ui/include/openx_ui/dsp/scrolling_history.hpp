@@ -18,18 +18,19 @@ public:
         float inputDb{-100.0f};
         float outputDb{-100.0f};
         float gainReductionDb{0.0f};
+        float gateState{0.0f}; // 0 = Closed, 1 = Open, 2 = Hold, 3 = Ducking
     };
 
     ScrollingHistory() {
         buffer.fill(Frame{});
     }
 
-    void push(float inDb, float outDb, float grDb) noexcept {
+    void push(float inDb, float outDb, float grDb, float gateState = 0.0f) noexcept {
         const uint32_t s = seq.load(std::memory_order_relaxed);
         seq.store(s + 1, std::memory_order_release); // Mark odd (write in progress)
 
         const size_t idx = writeIndex.load(std::memory_order_relaxed);
-        buffer[idx] = Frame{ inDb, outDb, grDb };
+        buffer[idx] = Frame{ inDb, outDb, grDb, gateState };
         writeIndex.store((idx + 1) & Mask, std::memory_order_relaxed);
 
         seq.store(s + 2, std::memory_order_release); // Mark even (write completed)

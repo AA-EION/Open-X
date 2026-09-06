@@ -13,14 +13,18 @@ PluginProcessor::PluginProcessor()
 }
 
 void PluginProcessor::prepareToPlay(double sampleRate, int /*samplesPerBlock*/) {
-    for (auto& biquad : dynBiquads) {
-        biquad.prepare(static_cast<float>(sampleRate));
+    for (auto& chBiquads : dynBiquads) {
+        for (auto& biquad : chBiquads) {
+            biquad.prepare(static_cast<float>(sampleRate));
+        }
     }
 }
 
 void PluginProcessor::releaseResources() {
-    for (auto& biquad : dynBiquads) {
-        biquad.reset();
+    for (auto& chBiquads : dynBiquads) {
+        for (auto& biquad : chBiquads) {
+            biquad.reset();
+        }
     }
 }
 
@@ -36,20 +40,45 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiB
     const float inGainLinear  = juce::Decibels::decibelsToGain(params.get(ParamId::InputGain));
     const float outGainLinear = juce::Decibels::decibelsToGain(params.get(ParamId::OutputGain));
 
-    openx::dsp::DynamicBiquadEngine<float>::Parameters p;
-    p.frequency        = params.get(ParamId::Band1Freq);
-    p.staticGainDb     = params.get(ParamId::Band1Gain);
-    p.q                = params.get(ParamId::Band1Q);
-    p.dynamicGainMaxDb = params.get(ParamId::Band1DynGain);
-    p.thresholdDb      = params.get(ParamId::Band1Threshold);
-    p.ratio            = 2.0f;
-    p.kneeDb           = 3.0f;
-    p.attackMs         = 10.0f;
-    p.releaseMs        = 100.0f;
-    p.downward         = (p.dynamicGainMaxDb <= 0.0f);
+    // Check if any band has solo enabled
+    bool anySolo = false;
+    for (size_t b = 0; b < NumBands; ++b) {
+        const bool solo = params.get(getBandSoloId(b)) > 0.5f;
+        const bool bypass = params.get(getBandBypassId(b)) > 0.5f;
+        if (solo && !bypass) {
+            anySolo = true;
+            break;
+        }
+    }
 
-    for (auto& biquad : dynBiquads) {
-        biquad.setParameters(p);
+    // Configure all 8 dynamic biquad engines across both channels
+    for (size_t b = 0; b < NumBands; ++b) {
+        openx::dsp::DynamicBiquadEngine<float>::Parameters p;
+        p.frequency        = params.get(getBandFreqId(b));
+        p.staticGainDb     = params.get(getBandGainId(b));
+        p.q                = params.get(getBandQId(b));
+        p.dynamicGainMaxDb = params.get(getBandDynGainId(b));
+        p.thresholdDb      = params.get(getBandThresholdId(b));
+        p.ratio            = 2.0f;
+        p.kneeDb           = 3.0f;
+        p.attackMs         = 10.0f;
+        p.releaseMs        = 100.0f;
+        p.downward         = (p.dynamicGainMaxDb <= 0.0f);
+        p.bypassed         = (params.get(getBandBypassId(b)) > 0.5f);
+
+        const int typeInt = std::clamp(static_cast<int>(std::round(params.get(getBandTypeId(b)))), 0, 5);
+        p.filterType       = static_cast<openx::dsp::DynamicBiquadEngine<float>::FilterType>(typeInt);
+
+        // LowCut, HighCut, and Notch filters have fixed 0 dB passband gain
+        if (p.filterType == openx::dsp::DynamicBiquadEngine<float>::FilterType::LowCut ||
+            p.filterType == openx::dsp::DynamicBiquadEngine<float>::FilterType::HighCut ||
+            p.filterType == openx::dsp::DynamicBiquadEngine<float>::FilterType::Notch) {
+            p.staticGainDb = 0.0f;
+        }
+
+        for (size_t ch = 0; ch < 2; ++ch) {
+            dynBiquads[ch][b].setParameters(p);
+        }
     }
 
     const int numSamples = buffer.getNumSamples();
@@ -57,18 +86,47 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiB
 
     for (int ch = 0; ch < channelsToProcess; ++ch) {
         auto* channelData = buffer.getWritePointer(ch);
-        auto& engine = dynBiquads[static_cast<size_t>(ch)];
+        auto& chBiquads = dynBiquads[static_cast<size_t>(ch)];
 
-        for (int i = 0; i < numSamples; ++i) {
-            const float in = channelData[i] * inGainLinear;
-            const float out = engine.processSample(in);
-            const float finalSample = out * outGainLinear;
-            channelData[i] = finalSample;
+        if (anySolo) {
+            // Solo audition mode: sum isolated frequency bands of active soloed bands
+            for (int i = 0; i < numSamples; ++i) {
+                const float in = channelData[i] * inGainLinear;
+                float soloSum = 0.0f;
+                for (size_t b = 0; b < NumBands; ++b) {
+                    const bool solo = params.get(getBandSoloId(b)) > 0.5f;
+                    const bool bypass = params.get(getBandBypassId(b)) > 0.5f;
+                    if (solo && !bypass) {
+                        soloSum += chBiquads[b].processSoloSample(in);
+                    }
+                }
+                const float finalSample = soloSum * outGainLinear;
+                channelData[i] = finalSample;
 
-            if (ch == 0) {
-                spectrumAnalyzer.pushSample(finalSample);
+                if (ch == 0) {
+                    spectrumAnalyzer.pushSample(finalSample);
+                }
+            }
+        } else {
+            // Normal mode: cascade all 8 dynamic biquads in series
+            for (int i = 0; i < numSamples; ++i) {
+                float sample = channelData[i] * inGainLinear;
+                for (size_t b = 0; b < NumBands; ++b) {
+                    sample = chBiquads[b].processSample(sample);
+                }
+                const float finalSample = sample * outGainLinear;
+                channelData[i] = finalSample;
+
+                if (ch == 0) {
+                    spectrumAnalyzer.pushSample(finalSample);
+                }
             }
         }
+    }
+
+    // Cache dynamic gain modulation offsets for UI meters (from channel 0)
+    for (size_t b = 0; b < NumBands; ++b) {
+        dynamicGainOffsets[b].store(dynBiquads[0][b].getDynamicDeltaDb(), std::memory_order_relaxed);
     }
 
     if (totalNumInputChannels == 1 && totalNumOutputChannels > 1) {
