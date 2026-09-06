@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.24)
 # Suite version. CI overrides this from the pushed git tag (v1.2.3 -> 1.2.3) so
 # that plugin binaries, the macOS .pkg and the Windows .msi all carry the same
 # numeric version and upgrade cleanly over previous releases.
-set(OPENX_VERSION "1.0.0" CACHE STRING "Open-X DSP Suite version (major.minor.patch)")
+set(OPENX_VERSION "1.1.0" CACHE STRING "Open-X DSP Suite version (major.minor.patch)")
 
 if(NOT OPENX_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
     message(FATAL_ERROR "OPENX_VERSION must be numeric major.minor.patch, got '${OPENX_VERSION}'")

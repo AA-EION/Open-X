@@ -161,17 +161,18 @@ python packaging/windows/packager_Windows_WiX.py
 
 ## Continuous Integration & Delivery
 
-The GitHub Actions workflow (`.github/workflows/build.yml`) runs on every push and pull request:
-- **macOS-ARM64 Runner (`macos-14`)**:
-  - Compiles universal `arm64;x86_64` plugins and the uninstaller application.
+The GitHub Actions workflow (`.github/workflows/build.yml`) runs on every push and pull request, and publishes a GitHub Release when a `v*` tag is pushed:
+
+- **Version resolution**: a single numeric version (`major.minor.patch`) is derived from the git tag (e.g. `v1.1.0` → `1.1.0`) and threaded into CMake, `pkgbuild` and WiX so every installer carries the same version.
+- **macOS (macos-14)**:
+  - Compiles universal (`arm64;x86_64`) VST3/AU plugins and the uninstaller application.
   - Ad-hoc signs all Mach-O binaries with hardened runtime.
-  - Builds and packages `Open-X-Suite-macOS.pkg`.
-  - Publishes `OpenX-Suite-macOS-Installer` and `OpenX-Uninstaller-macOS` artifacts.
-- **Windows-x86_64 Runner (`windows-2022`)**:
-  - Compiles VST3 plugins with MSVC.
-  - Installs WiX 5.0.2 and WiX UI extension.
-  - Generates WiX manifest and compiles `Open-X-Suite-Windows.msi`.
-  - Publishes `OpenX-Suite-Windows-Installer` artifact.
+  - Builds `Open-X-Suite-macOS.pkg` and archives the plugins/uninstaller with `ditto` (preserving symlinks and executable bits).
+- **Windows (windows-2022)**:
+  - Compiles VST3 plugins for both `x64` and `ARM64` and merges them into universal `Contents/x86_64-win` + `Contents/arm64-win` bundles.
+  - Installs WiX 5.0.2 and the WiX UI extension.
+  - Builds `Open-X-Suite-Windows.msi` and archives the universal VST3 bundles.
+- **Release job** (on tag push): downloads all artifacts, verifies the five expected assets, and publishes them to GitHub Releases (a `-rc`/`-beta` suffix marks the release as a pre-release).
 
 ---
 

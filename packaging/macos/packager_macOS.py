@@ -56,7 +56,7 @@ def find_item_in_build(search_dirs, filename):
 def main():
     build_dir = os.getenv("BUILD_DIR", "build")
     output_dir = os.getenv("OUTPUT_DIR", "staging")
-    version = os.getenv("VERSION", "1.0.0")
+    version = os.getenv("VERSION", "1.1.0")
     product_name = os.getenv("PRODUCT_NAME", "Open-X DSP Suite")
     bundle_id_base = os.getenv("BUNDLE_ID", "com.openxdsp.openxsuite")
     macos_arch = os.getenv("MACOS_ARCH", "arm64,x86_64")

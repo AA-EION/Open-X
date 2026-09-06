@@ -69,7 +69,7 @@ def write_dir_recursive(file_handle, current_os_path, parent_wix_id, component_l
 
 def main():
     product_name = os.getenv("PRODUCT_NAME", "Open-X DSP Suite")
-    version = os.getenv("VERSION", "1.0.0")
+    version = os.getenv("VERSION", "1.1.0")
     publisher = os.getenv("COMPANY_NAME", "Open-X DSP")
     staging_dir = os.getenv("STAGING_DIR", "staging")
     build_dir = os.getenv("BUILD_DIR", "build")
