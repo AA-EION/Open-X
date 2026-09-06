@@ -15,7 +15,7 @@ target_link_libraries(openx_ui INTERFACE
 target_compile_features(openx_ui INTERFACE cxx_std_20)
 
 if(MSVC)
-    target_compile_options(openx_ui INTERFACE /O2 /W4)
+    target_compile_options(openx_ui INTERFACE /O1 /W4)
 else()
     target_compile_options(openx_ui INTERFACE -O3 -Wall -Wextra -Wpedantic)
 endif()

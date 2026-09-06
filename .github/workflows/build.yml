@@ -92,6 +92,7 @@ jobs:
     name: macOS Universal Suite
     needs: [ version, validate ]
     runs-on: macos-14
+    timeout-minutes: 45
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
@@ -224,6 +225,7 @@ jobs:
     name: Windows Universal Suite
     needs: [ version, validate ]
     runs-on: windows-2022
+    timeout-minutes: 120
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
